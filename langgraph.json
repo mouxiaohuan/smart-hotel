@@ -1,0 +1,7 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "enterprise_knowledge": "./src/knowledge-graph.ts:enterpriseKnowledgeGraph"
+  },
+  "env": ".env"
+}

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Smart Hotel Concierge</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div>
+          <p class="eyebrow">Smart Hotel</p>
+          <h1>酒店智能问答系统</h1>
+          <p class="summary">把房型、政策和服务知识变成一个会说话的前台专家，支持住前咨询、住中服务答疑和人工转接兜底。</p>
+        </div>
+        <section class="panel">
+          <h2>知识范围</h2>
+          <ul id="knowledge-list"></ul>
+        </section>
+      </aside>
+      <main class="main">
+        <section class="hero">
+          <div>
+            <p class="eyebrow">Guest Support</p>
+            <h2>像酒店金牌管家一样回答问题</h2>
+            <p>示例：可以带宠物吗？早餐几点开始？机场接送怎么预约？</p>
+          </div>
+          <div class="metrics">
+            <div><span>知识条目</span><strong id="kb-count">0</strong></div>
+            <div><span>支持场景</span><strong>入住 / 餐饮 / 设施 / 交通</strong></div>
+          </div>
+        </section>
+        <section class="chat-card">
+          <div id="messages" class="messages"></div>
+          <form id="chat-form" class="composer">
+            <input id="question" name="question" type="text" placeholder="请输入客户问题" autocomplete="off" />
+            <button type="submit">发送</button>
+          </form>
+          <div class="quick-actions">
+            <button data-question="早餐几点开始？">早餐</button>
+            <button data-question="可以带宠物入住吗？">宠物</button>
+            <button data-question="行政大床房适合几个人住？">房型</button>
+            <button data-question="机场接送怎么预约？">接送</button>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script src="/app.js"></script>
+  </body>
+  </html>
