@@ -26,6 +26,8 @@ npm run dev
 
 退款超时后会返回 `pending_human_review` 和 `threadId`。使用同一个 `threadId` 调用 `POST /api/refund/review`，提交 `decision: "approve"` 或 `"reject"`，即可完成或拒绝人工审核。
 
+HITL 状态使用 Redis 持久化。先运行 `docker compose up -d redis`，再启动应用；可通过 `GET /api/refund/state?threadId=...` 查询最新审核状态。
+
 ## 目录
 
 - `data/knowledge.ts`：酒店知识库

@@ -1,6 +1,7 @@
-import { Annotation, END, MemorySaver, START, StateGraph } from '@langchain/langgraph';
+import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
 import { matchIntentSemantic } from '../intent-knowledge.js';
 import { graphRunConfig, withHarness } from '../agent-harness.js';
+import { loadRefundRequest, refundCheckpointer, saveRefundRequest } from '../refund-state-store.js';
 
 export type RefundIntent = 'checkout_refund' | 'other';
 export type RefundStatus = 'approved' | 'pending_human_review' | 'rejected';
@@ -88,10 +89,9 @@ export const refundGraph = new StateGraph(RefundState)
   .addConditionalEdges('evaluate_policy', routeAfterPolicy, ['process_immediate_refund', 'human_review'])
   .addEdge('process_immediate_refund', END)
   .addEdge('human_review', END)
-  .compile({ checkpointer: new MemorySaver() });
+  .compile({ checkpointer: refundCheckpointer, interruptBefore: ['human_review'] });
 
 export type RefundWorkflowResult = typeof RefundState.State & { threadId: string };
-const refundThreads = new Map<string, RefundWorkflowResult>();
 
 export async function requestCheckoutRefund(input: { message: string; orderId?: string; now?: string; threadId?: string }): Promise<RefundWorkflowResult> {
   const threadId = input.threadId ?? `refund-${crypto.randomUUID()}`;
@@ -110,13 +110,13 @@ export async function requestCheckoutRefund(input: { message: string; orderId?: 
     trace: []
   }, graphRunConfig(threadId)), Number(process.env.AGENT_TIMEOUT_MS ?? 20_000));
   const saved = { ...result, threadId };
-  refundThreads.set(threadId, saved);
+  await saveRefundRequest(threadId, saved);
   return saved;
 }
 
 export async function reviewCheckoutRefund(input: { threadId: string; decision: 'approve' | 'reject'; note?: string }) {
   const config = graphRunConfig(input.threadId);
-  const current = refundThreads.get(input.threadId) ?? (await refundGraph.getState(config)).values as RefundWorkflowResult;
+  const current = await loadRefundRequest<RefundWorkflowResult>(input.threadId) ?? (await refundGraph.getState(config)).values as RefundWorkflowResult;
   if (!current.order) throw new Error('找不到待审核订单，请使用申请退款返回的 threadId。');
   if (current.status !== 'pending_human_review') throw new Error('该退款申请不在待人工审核状态。');
   const approved = input.decision === 'approve';
@@ -128,10 +128,15 @@ export async function reviewCheckoutRefund(input: { threadId: string; decision: 
     decisionReason: `${current.decisionReason} 人工决定：${approved ? '同意退款' : '拒绝退款'}。${input.note ?? ''}`,
     trace: [...current.trace, `人工确认：${approved ? '同意退款并提交' : '拒绝退款'}`]
   };
-  await refundGraph.updateState(config, updated);
-  const saved = { ...current, ...updated, threadId: input.threadId };
-  refundThreads.set(input.threadId, saved);
+  await refundGraph.updateState(config, updated, 'human_review');
+  const resumed = await refundGraph.invoke(null, config);
+  const saved = { ...resumed, threadId: input.threadId };
+  await saveRefundRequest(input.threadId, saved);
   return saved;
+}
+
+export async function getRefundRequestState(threadId: string) {
+  return await loadRefundRequest<RefundWorkflowResult>(threadId) ?? (await refundGraph.getState(graphRunConfig(threadId))).values;
 }
 
 /**
