@@ -1,5 +1,6 @@
 import { Annotation, END, MemorySaver, START, StateGraph } from '@langchain/langgraph';
 import { matchIntentSemantic } from '../intent-knowledge.js';
+import { graphRunConfig, withHarness } from '../agent-harness.js';
 
 export type RefundIntent = 'checkout_refund' | 'other';
 export type RefundStatus = 'approved' | 'pending_human_review' | 'rejected';
@@ -94,8 +95,8 @@ const refundThreads = new Map<string, RefundWorkflowResult>();
 
 export async function requestCheckoutRefund(input: { message: string; orderId?: string; now?: string; threadId?: string }): Promise<RefundWorkflowResult> {
   const threadId = input.threadId ?? `refund-${crypto.randomUUID()}`;
-  const config = { configurable: { thread_id: threadId } };
-  const result = await refundGraph.invoke({
+  const config = graphRunConfig(threadId);
+  const result = await withHarness(threadId, () => refundGraph.invoke({
     message: input.message,
     orderId: input.orderId,
     now: input.now ?? new Date().toISOString(),
@@ -107,14 +108,14 @@ export async function requestCheckoutRefund(input: { message: string; orderId?: 
     humanDecision: undefined,
     humanNote: undefined,
     trace: []
-  }, config);
+  }, graphRunConfig(threadId)), Number(process.env.AGENT_TIMEOUT_MS ?? 20_000));
   const saved = { ...result, threadId };
   refundThreads.set(threadId, saved);
   return saved;
 }
 
 export async function reviewCheckoutRefund(input: { threadId: string; decision: 'approve' | 'reject'; note?: string }) {
-  const config = { configurable: { thread_id: input.threadId } };
+  const config = graphRunConfig(input.threadId);
   const current = refundThreads.get(input.threadId) ?? (await refundGraph.getState(config)).values as RefundWorkflowResult;
   if (!current.order) throw new Error('找不到待审核订单，请使用申请退款返回的 threadId。');
   if (current.status !== 'pending_human_review') throw new Error('该退款申请不在待人工审核状态。');

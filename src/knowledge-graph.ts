@@ -4,6 +4,7 @@ import { ChatOpenAI } from '@langchain/openai';
 import { knowledgeBase, type KnowledgeItem } from '../data/knowledge.js';
 import { matchIntentSemantic, type IntentDefinition } from './intent-knowledge.js';
 import { requestCheckoutRefund, type RefundStatus, type RefundWorkflowResult } from './workflows/refund-approval.js';
+import { audit, graphRunConfig, withHarness } from './agent-harness.js';
 
 type RetrievedItem = KnowledgeItem & { score: number };
 const conversationMemory = new Map<string, { orderId?: string; awaitingRefundOrder: boolean }>();
@@ -133,7 +134,7 @@ export async function askEnterpriseKnowledgeBase(query: string, orderId?: string
     : isRefundRequest && !effectiveOrderId && previous.orderId
       ? `${query} 订单 ${previous.orderId}`
       : query;
-  const result = await enterpriseKnowledgeGraph.invoke({
+  const result = await withHarness(threadId, () => enterpriseKnowledgeGraph.invoke({
     query: effectiveQuery,
     intent: 'general',
     orderId: effectiveOrderId,
@@ -144,7 +145,8 @@ export async function askEnterpriseKnowledgeBase(query: string, orderId?: string
     trace: [],
     refund: undefined
     ,threadId
-  });
+  }, graphRunConfig(threadId)), Number(process.env.AGENT_TIMEOUT_MS ?? 20_000));
+  audit('answer.completed', threadId, { intent: result.intent, refundStatus: result.refund?.status });
   const sources = result.retrieved.map(({ id, title, category }) => ({ id, title, category }));
   return {
     answer: result.answer,

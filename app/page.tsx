@@ -21,8 +21,11 @@ export default function Home() {
     const query = value.trim(); if (!query || loading) return;
     setQuestion(''); setMessages((items) => [...items, { role: 'user', text: query }]); setLoading(true);
     try {
-      const response = await fetch('/api/ask', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-thread-id': threadId }, body: JSON.stringify({ query }) });
-      const data = (await response.json()) as Result;
+      const response = await fetch('/api/ask/stream', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-thread-id': threadId }, body: JSON.stringify({ query }) });
+      if (!response.body) throw new Error('Streaming unavailable');
+      const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ''; let data: Result | undefined;
+      while (true) { const chunk = await reader.read(); if (chunk.done) break; buffer += decoder.decode(chunk.value, { stream: true }); const events = buffer.split('\n\n'); buffer = events.pop() ?? ''; for (const event of events) { const line = event.split('\n').find((item) => item.startsWith('data: ')); if (!line) continue; const payload = JSON.parse(line.slice(6)) as { step?: string } & Result; if (payload.step) setMessages((items) => [...items, { role: 'bot', text: `处理中：${payload.step}` }]); if (payload.answer) data = payload; } }
+      if (!data) throw new Error('No streaming answer');
       const source = data.sources.length ? `来源：${data.sources.map((item) => `${item.category} / ${item.title}`).join('；')} | ` : '';
       setMessages((items) => [...items, { role: 'bot', text: data.answer, meta: `${source}置信度：${Math.round(data.confidence * 100)}% | ${data.trace.join(' → ')}` }]);
       if (data.refund?.status === 'pending_human_review' && data.threadId) setPendingThread(data.threadId);
