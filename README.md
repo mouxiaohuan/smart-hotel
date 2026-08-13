@@ -24,6 +24,8 @@ npm run dev
 
 项目已开启 LangSmith 自动追踪。将 `LANGSMITH_API_KEY` 写入本地 `.env` 后，LangGraph 节点、OpenAI 调用和输入输出会出现在 `smart-hotel-enterprise-kb` 项目中；没有 Key 时仍可在本地 Studio 查看节点状态。
 
+退款超时后会返回 `pending_human_review` 和 `threadId`。使用同一个 `threadId` 调用 `POST /api/refund/review`，提交 `decision: "approve"` 或 `"reject"`，即可完成或拒绝人工审核。
+
 ## 目录
 
 - `data/knowledge.ts`：酒店知识库

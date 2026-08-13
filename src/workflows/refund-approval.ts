@@ -90,6 +90,7 @@ export const refundGraph = new StateGraph(RefundState)
   .compile({ checkpointer: new MemorySaver() });
 
 export type RefundWorkflowResult = typeof RefundState.State & { threadId: string };
+const refundThreads = new Map<string, RefundWorkflowResult>();
 
 export async function requestCheckoutRefund(input: { message: string; orderId?: string; now?: string; threadId?: string }): Promise<RefundWorkflowResult> {
   const threadId = input.threadId ?? `refund-${crypto.randomUUID()}`;
@@ -107,14 +108,29 @@ export async function requestCheckoutRefund(input: { message: string; orderId?: 
     humanNote: undefined,
     trace: []
   }, config);
-  return { ...result, threadId };
+  const saved = { ...result, threadId };
+  refundThreads.set(threadId, saved);
+  return saved;
 }
 
 export async function reviewCheckoutRefund(input: { threadId: string; decision: 'approve' | 'reject'; note?: string }) {
   const config = { configurable: { thread_id: input.threadId } };
-  await refundGraph.updateState(config, { humanDecision: input.decision, humanNote: input.note ?? '' });
-  const result = await refundGraph.invoke(null, config);
-  return { ...result, threadId: input.threadId };
+  const current = refundThreads.get(input.threadId) ?? (await refundGraph.getState(config)).values as RefundWorkflowResult;
+  if (!current.order) throw new Error('找不到待审核订单，请使用申请退款返回的 threadId。');
+  if (current.status !== 'pending_human_review') throw new Error('该退款申请不在待人工审核状态。');
+  const approved = input.decision === 'approve';
+  const updated = {
+    humanDecision: input.decision,
+    humanNote: input.note ?? '',
+    status: approved ? 'approved' as const : 'rejected' as const,
+    refundId: approved ? `RF-MANUAL-${current.order.id}-${Date.parse(current.now)}` : undefined,
+    decisionReason: `${current.decisionReason} 人工决定：${approved ? '同意退款' : '拒绝退款'}。${input.note ?? ''}`,
+    trace: [...current.trace, `人工确认：${approved ? '同意退款并提交' : '拒绝退款'}`]
+  };
+  await refundGraph.updateState(config, updated);
+  const saved = { ...current, ...updated, threadId: input.threadId };
+  refundThreads.set(input.threadId, saved);
+  return saved;
 }
 
 /**
