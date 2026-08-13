@@ -5,7 +5,7 @@ node_modules/
 !.env.example
 public/app.js
 dist/
-
+.next/
 
 # LangGraph API
 .langgraph_api

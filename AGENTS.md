@@ -11,6 +11,8 @@
 
 - `app/`：Next.js 页面和 Route Handler
 - `src/knowledge-graph.ts`：LangGraph 图定义与问答入口
+- `src/intent-knowledge.ts`：共享意图知识库与确定性路由规则
+- `src/workflows/`：需要人工参与的业务工作流，例如退房退款审批
 - `data/knowledge.ts`：模拟酒店知识库
 - `langgraph.json`：LangGraph Studio 图注册配置
 - `.env`：本地密钥和 tracing 配置，不允许提交到 Git

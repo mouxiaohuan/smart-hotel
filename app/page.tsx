@@ -13,13 +13,14 @@ export default function Home() {
   const [question, setQuestion] = useState('');
   const [knowledge, setKnowledge] = useState<{ title: string; category: string }[]>([]);
   const [loading, setLoading] = useState(false);
+  const [threadId] = useState(() => `web-${crypto.randomUUID()}`);
 
   useEffect(() => { fetch('/api/knowledge').then((res) => res.json()).then(setKnowledge); }, []);
   async function ask(value: string) {
     const query = value.trim(); if (!query || loading) return;
     setQuestion(''); setMessages((items) => [...items, { role: 'user', text: query }]); setLoading(true);
     try {
-      const response = await fetch('/api/ask', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query }) });
+      const response = await fetch('/api/ask', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-thread-id': threadId }, body: JSON.stringify({ query }) });
       const data = (await response.json()) as Result;
       const source = data.sources.length ? `来源：${data.sources.map((item) => `${item.category} / ${item.title}`).join('；')} | ` : '';
       setMessages((items) => [...items, { role: 'bot', text: data.answer, meta: `${source}置信度：${Math.round(data.confidence * 100)}% | ${data.trace.join(' → ')}` }]);

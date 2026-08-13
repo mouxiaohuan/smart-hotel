@@ -2,8 +2,11 @@ import 'dotenv/config';
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
 import { ChatOpenAI } from '@langchain/openai';
 import { knowledgeBase, type KnowledgeItem } from '../data/knowledge.js';
+import { matchIntentSemantic, type IntentDefinition } from './intent-knowledge.js';
+import { requestCheckoutRefund, type RefundStatus, type RefundWorkflowResult } from './workflows/refund-approval.js';
 
 type RetrievedItem = KnowledgeItem & { score: number };
+const conversationMemory = new Map<string, { orderId?: string; awaitingRefundOrder: boolean }>();
 
 export type KnowledgeAnswer = {
   answer: string;
@@ -11,15 +14,21 @@ export type KnowledgeAnswer = {
   confidence: number;
   suggestions: string[];
   trace: string[];
+  refund?: { status: RefundStatus; refundId?: string; reason: string };
+  threadId?: string;
 };
 
 const KnowledgeState = Annotation.Root({
   query: Annotation<string>(),
-  intent: Annotation<string>(),
+  intent: Annotation<IntentDefinition['id']>(),
+  orderId: Annotation<string | undefined>(),
+  now: Annotation<string | undefined>(),
   retrieved: Annotation<RetrievedItem[]>(),
   answer: Annotation<string>(),
   confidence: Annotation<number>(),
-  trace: Annotation<string[]>()
+  trace: Annotation<string[]>(),
+  refund: Annotation<KnowledgeAnswer['refund']>()
+  ,threadId: Annotation<string>()
 });
 
 function scoreDocument(query: string, document: KnowledgeItem) {
@@ -31,21 +40,28 @@ function scoreDocument(query: string, document: KnowledgeItem) {
   return (content.includes(queryText) ? 8 : 0) + tagScore + bigramScore;
 }
 
-function classifyIntent(query: string) {
-  const mappings: Record<string, string[]> = {
-    '入住政策': ['入住', '退房', '宠物', '取消', '改期'],
-    '餐饮服务': ['早餐', '餐厅', '用餐'],
-    '康体设施': ['游泳', '泳池', '健身'],
-    '交通服务': ['停车', '机场', '接送'],
-    '房型信息': ['房型', '大床', '套房', '婴儿床']
-  };
-  return Object.entries(mappings).find(([, keywords]) => keywords.some((keyword) => query.includes(keyword)))?.[0] ?? '通用咨询';
-}
+const analyzeQuestion = async (state: typeof KnowledgeState.State) => {
+  const match = await matchIntentSemantic(state.query);
+  return { intent: match.intent.id, trace: [...state.trace, `意图识别：${match.intent.label}（${match.mode}，${match.score.toFixed(2)}）`] };
+};
 
-const analyzeQuestion = (state: typeof KnowledgeState.State) => ({
-  intent: classifyIntent(state.query),
-  trace: [...state.trace, '问题分析']
-});
+const delegateRefund = async (state: typeof KnowledgeState.State) => {
+  const result = await requestCheckoutRefund({ message: state.query, orderId: state.orderId, now: state.now, threadId: state.threadId });
+  const answer = !state.orderId
+    ? '好的，我可以帮你办理退款。请提供订单号，例如 HOTEL-1001。'
+    : result.status === 'approved'
+    ? `退款申请已通过，退款金额为 ${result.order?.amountCny ?? 0} 元，退款单号：${result.refundId}。`
+    : `退款申请需要人工确认。${result.decisionReason}`;
+  return {
+    answer,
+    confidence: result.status === 'approved' ? 0.98 : 0.72,
+    refund: { status: result.status!, refundId: result.refundId, reason: result.decisionReason },
+    threadId: result.threadId,
+    trace: [...state.trace, '委派退款审批工作流', ...result.trace]
+  };
+};
+
+const routeIntent = (state: typeof KnowledgeState.State) => state.intent === 'checkout_refund' ? 'delegate_refund' : 'retrieve_knowledge';
 
 const retrieveKnowledge = (state: typeof KnowledgeState.State) => ({
   retrieved: knowledgeBase
@@ -92,11 +108,13 @@ const verifyAnswer = (state: typeof KnowledgeState.State) => ({
 
 export const enterpriseKnowledgeGraph = new StateGraph(KnowledgeState)
   .addNode('analyze_question', analyzeQuestion)
+  .addNode('delegate_refund', delegateRefund)
   .addNode('retrieve_knowledge', retrieveKnowledge)
   .addNode('compose_answer', composeAnswer)
   .addNode('verify_answer', verifyAnswer)
   .addEdge(START, 'analyze_question')
-  .addEdge('analyze_question', 'retrieve_knowledge')
+  .addConditionalEdges('analyze_question', routeIntent, ['delegate_refund', 'retrieve_knowledge'])
+  .addEdge('delegate_refund', END)
   .addEdge('retrieve_knowledge', 'compose_answer')
   .addEdge('compose_answer', 'verify_answer')
   .addEdge('verify_answer', END)
@@ -104,14 +122,28 @@ export const enterpriseKnowledgeGraph = new StateGraph(KnowledgeState)
 
 
 
-export async function askEnterpriseKnowledgeBase(query: string): Promise<KnowledgeAnswer> {
+export async function askEnterpriseKnowledgeBase(query: string, orderId?: string, now?: string, threadId = 'default'): Promise<KnowledgeAnswer> {
+  const previous = conversationMemory.get(threadId) ?? { awaitingRefundOrder: false };
+  const extractedOrderId = orderId ?? query.match(/HOTEL-\d+/i)?.[0]?.toUpperCase() ?? previous.orderId;
+  const effectiveOrderId = extractedOrderId;
+  const isRefundRequest = /退款|退房|退押金/.test(query);
+  conversationMemory.set(threadId, { orderId: effectiveOrderId, awaitingRefundOrder: isRefundRequest && !effectiveOrderId });
+  const effectiveQuery = previous.awaitingRefundOrder && effectiveOrderId
+    ? `我要退房退款，订单 ${effectiveOrderId}`
+    : isRefundRequest && !effectiveOrderId && previous.orderId
+      ? `${query} 订单 ${previous.orderId}`
+      : query;
   const result = await enterpriseKnowledgeGraph.invoke({
-    query,
-    intent: '通用咨询',
+    query: effectiveQuery,
+    intent: 'general',
+    orderId: effectiveOrderId,
+    now: now ?? process.env.MOCK_NOW,
     retrieved: [],
     answer: '',
     confidence: 0,
-    trace: []
+    trace: [],
+    refund: undefined
+    ,threadId
   });
   const sources = result.retrieved.map(({ id, title, category }) => ({ id, title, category }));
   return {
@@ -119,6 +151,8 @@ export async function askEnterpriseKnowledgeBase(query: string): Promise<Knowled
     sources,
     confidence: result.confidence,
     suggestions: sources.slice(0, 2).map((source) => source.title),
-    trace: result.trace
+    trace: result.trace,
+    refund: result.refund
+    ,threadId: result.threadId
   };
 }

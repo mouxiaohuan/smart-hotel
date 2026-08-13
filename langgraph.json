@@ -1,7 +1,8 @@
 {
   "dependencies": ["."],
   "graphs": {
-    "enterprise_knowledge": "./src/knowledge-graph.ts:enterpriseKnowledgeGraph"
+    "enterprise_knowledge": "./src/knowledge-graph.ts:enterpriseKnowledgeGraph",
+    "checkout_refund": "./src/workflows/refund-approval.ts:refundGraph"
   },
   "env": ".env"
 }
