@@ -1,10 +1,11 @@
 import 'dotenv/config';
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
 import { ChatOpenAI } from '@langchain/openai';
-import { knowledgeBase, type KnowledgeItem } from '../data/knowledge.js';
-import { matchIntentSemantic, type IntentDefinition } from './intent-knowledge.js';
-import { requestCheckoutRefund, type RefundStatus, type RefundWorkflowResult } from './workflows/refund-approval.js';
-import { audit, graphRunConfig, withHarness } from './agent-harness.js';
+import { knowledgeBase, type KnowledgeItem } from '../data/knowledge';
+import { matchIntentSemantic, type IntentDefinition } from './intent-knowledge';
+import { getHotelOrder, requestCheckoutRefund, type RefundStatus } from './workflows/refund-approval';
+import { audit, graphRunConfig, withHarness } from './agent-harness';
+import { AuthError, requireMemberAuth } from './auth/member-auth';
 
 type RetrievedItem = KnowledgeItem & { score: number };
 const conversationMemory = new Map<string, { orderId?: string; awaitingRefundOrder: boolean }>();
@@ -23,6 +24,7 @@ const KnowledgeState = Annotation.Root({
   query: Annotation<string>(),
   intent: Annotation<IntentDefinition['id']>(),
   orderId: Annotation<string | undefined>(),
+  authorization: Annotation<string | undefined>(),
   now: Annotation<string | undefined>(),
   retrieved: Annotation<RetrievedItem[]>(),
   answer: Annotation<string>(),
@@ -47,7 +49,10 @@ const analyzeQuestion = async (state: typeof KnowledgeState.State) => {
 };
 
 const delegateRefund = async (state: typeof KnowledgeState.State) => {
-  const result = await requestCheckoutRefund({ message: state.query, orderId: state.orderId, now: state.now, threadId: state.threadId });
+  const member = await requireMemberAuth(state.authorization);
+  const order = getHotelOrder(state.orderId);
+  if (order && order.memberId !== member.sub) throw new AuthError('AUTH_FORBIDDEN', '该订单不属于当前登录会员。');
+  const result = await requestCheckoutRefund({ message: state.query, orderId: state.orderId, now: state.now, threadId: state.threadId, memberId: member.sub });
   const answer = !state.orderId
     ? '好的，我可以帮你办理退款。请提供订单号，例如 HOTEL-1001。'
     : result.status === 'approved'
@@ -123,7 +128,7 @@ export const enterpriseKnowledgeGraph = new StateGraph(KnowledgeState)
 
 
 
-export async function askEnterpriseKnowledgeBase(query: string, orderId?: string, now?: string, threadId = 'default'): Promise<KnowledgeAnswer> {
+export async function askEnterpriseKnowledgeBase(query: string, orderId?: string, now?: string, threadId = 'default', authorization?: string): Promise<KnowledgeAnswer> {
   const previous = conversationMemory.get(threadId) ?? { awaitingRefundOrder: false };
   const extractedOrderId = orderId ?? query.match(/HOTEL-\d+/i)?.[0]?.toUpperCase() ?? previous.orderId;
   const effectiveOrderId = extractedOrderId;
@@ -138,6 +143,7 @@ export async function askEnterpriseKnowledgeBase(query: string, orderId?: string
     query: effectiveQuery,
     intent: 'general',
     orderId: effectiveOrderId,
+    authorization,
     now: now ?? process.env.MOCK_NOW,
     retrieved: [],
     answer: '',

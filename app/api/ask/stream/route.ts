@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { askEnterpriseKnowledgeBase } from '../../../../src/knowledge-graph';
+import { AuthError } from '../../../../src/auth/member-auth';
 
 export async function POST(request: Request) {
   const body = await request.json();
@@ -10,11 +11,11 @@ export async function POST(request: Request) {
       const send = (event: string, data: unknown) => controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
       try {
         send('status', { stage: 'started' });
-        const result = await askEnterpriseKnowledgeBase(String(body.query ?? '').trim(), body.orderId, body.now, threadId);
+        const result = await askEnterpriseKnowledgeBase(String(body.query ?? '').trim(), body.orderId, body.now, threadId, request.headers.get('authorization') ?? undefined);
         for (const step of result.trace) send('trace', { step });
         send('answer', result);
         send('done', { ok: true });
-      } catch (error) { send('error', { message: error instanceof Error ? error.message : 'Agent failed' }); }
+      } catch (error) { send('error', { code: error instanceof AuthError ? error.code : undefined, message: error instanceof Error ? error.message : 'Agent failed' }); }
       finally { controller.close(); }
     }
   });

@@ -1,13 +1,15 @@
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
-import { matchIntentSemantic } from '../intent-knowledge.js';
-import { graphRunConfig, withHarness } from '../agent-harness.js';
-import { loadRefundRequest, refundCheckpointer, saveRefundRequest } from '../refund-state-store.js';
+import { matchIntentSemantic } from '../intent-knowledge';
+import { audit, graphRunConfig, withHarness } from '../agent-harness';
+import { loadRefundRequest, refundCheckpointer, saveRefundRequest } from '../refund-state-store';
 
 export type RefundIntent = 'checkout_refund' | 'other';
 export type RefundStatus = 'approved' | 'pending_human_review' | 'rejected';
 
-type HotelOrder = {
+export type HotelOrder = {
   id: string;
+  memberId: string;
+  hotelId: string;
   guestName: string;
   roomNumber: string;
   amountCny: number;
@@ -17,14 +19,18 @@ type HotelOrder = {
 
 /** Replace this mock source with PMS / payment-provider data in production. */
 export const mockHotelOrders: HotelOrder[] = [
-  { id: 'HOTEL-1001', guestName: '张晨', roomNumber: '1208', amountCny: 688, checkoutAt: '2026-08-13T09:30:00+08:00', paymentStatus: 'paid' },
-  { id: 'HOTEL-1002', guestName: '李静', roomNumber: '806', amountCny: 1288, checkoutAt: '2026-08-13T06:30:00+08:00', paymentStatus: 'paid' },
-  { id: 'HOTEL-1003', guestName: '王明', roomNumber: '518', amountCny: 520, checkoutAt: '2026-08-13T10:10:00+08:00', paymentStatus: 'unpaid' }
+  { id: 'HOTEL-1001', memberId: 'member-zhang', hotelId: 'hotel-shanghai', guestName: '张晨', roomNumber: '1208', amountCny: 688, checkoutAt: '2026-08-13T09:30:00+08:00', paymentStatus: 'paid' },
+  { id: 'HOTEL-1002', memberId: 'member-li', hotelId: 'hotel-shanghai', guestName: '李静', roomNumber: '806', amountCny: 1288, checkoutAt: '2026-08-13T06:30:00+08:00', paymentStatus: 'paid' },
+  { id: 'HOTEL-1003', memberId: 'member-wang', hotelId: 'hotel-beijing', guestName: '王明', roomNumber: '518', amountCny: 520, checkoutAt: '2026-08-13T10:10:00+08:00', paymentStatus: 'unpaid' }
 ];
+
+export const getHotelOrder = (orderId?: string) => mockHotelOrders.find((order) => order.id === orderId);
 
 const RefundState = Annotation.Root({
   message: Annotation<string>(),
   orderId: Annotation<string | undefined>(),
+  memberId: Annotation<string>(),
+  hotelId: Annotation<string>(),
   now: Annotation<string>(),
   intent: Annotation<RefundIntent>(),
   order: Annotation<HotelOrder | undefined>(),
@@ -43,7 +49,7 @@ const classifyIntent = async (state: typeof RefundState.State) => {
 };
 
 const findOrder = (state: typeof RefundState.State) => ({
-  order: mockHotelOrders.find((order) => order.id === state.orderId),
+  order: getHotelOrder(state.orderId),
   trace: [...state.trace, '模拟订单查询']
 });
 
@@ -93,12 +99,14 @@ export const refundGraph = new StateGraph(RefundState)
 
 export type RefundWorkflowResult = typeof RefundState.State & { threadId: string };
 
-export async function requestCheckoutRefund(input: { message: string; orderId?: string; now?: string; threadId?: string }): Promise<RefundWorkflowResult> {
+export async function requestCheckoutRefund(input: { message: string; orderId?: string; now?: string; threadId?: string; memberId: string }): Promise<RefundWorkflowResult> {
   const threadId = input.threadId ?? `refund-${crypto.randomUUID()}`;
   const config = graphRunConfig(threadId);
   const result = await withHarness(threadId, () => refundGraph.invoke({
     message: input.message,
     orderId: input.orderId,
+    memberId: input.memberId,
+    hotelId: getHotelOrder(input.orderId)?.hotelId ?? '',
     now: input.now ?? new Date().toISOString(),
     intent: 'other',
     order: undefined,
@@ -111,10 +119,11 @@ export async function requestCheckoutRefund(input: { message: string; orderId?: 
   }, graphRunConfig(threadId)), Number(process.env.AGENT_TIMEOUT_MS ?? 20_000));
   const saved = { ...result, threadId };
   await saveRefundRequest(threadId, saved);
+  audit('refund.requested', threadId, { memberId: saved.memberId, hotelId: saved.hotelId, orderId: saved.orderId, status: saved.status });
   return saved;
 }
 
-export async function reviewCheckoutRefund(input: { threadId: string; decision: 'approve' | 'reject'; note?: string }) {
+export async function reviewCheckoutRefund(input: { threadId: string; decision: 'approve' | 'reject'; note?: string; reviewerId: string }) {
   const config = graphRunConfig(input.threadId);
   const current = await loadRefundRequest<RefundWorkflowResult>(input.threadId) ?? (await refundGraph.getState(config)).values as RefundWorkflowResult;
   if (!current.order) throw new Error('找不到待审核订单，请使用申请退款返回的 threadId。');
@@ -132,6 +141,7 @@ export async function reviewCheckoutRefund(input: { threadId: string; decision: 
   const resumed = await refundGraph.invoke(null, config);
   const saved = { ...resumed, threadId: input.threadId };
   await saveRefundRequest(input.threadId, saved);
+  audit('refund.reviewed', input.threadId, { reviewerId: input.reviewerId, memberId: current.memberId, hotelId: current.hotelId, reason: input.note ?? '', previousStatus: current.status, nextStatus: saved.status });
   return saved;
 }
 
